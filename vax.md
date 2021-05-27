@@ -1,7 +1,6 @@
 Vaccination rate in the US
 ================
 Matthew Kay
-4/26/2021
 
 The [New York Time vaccine
 tracker](https://www.nytimes.com/interactive/2020/us/covid-19-vaccine-doses.html)
@@ -391,7 +390,7 @@ way oversimplified — but I have some trepidation about looking at even
 simpler models (like linear projections) and ignoring their uncertainty,
 as this is probably going to be at least a little misleading.
 
-## Model comparison
+## Model checking
 
 For comparison purposes, let’s fit the model on data up to a few
 different dates and see how it did on the data we’ve already observed.
