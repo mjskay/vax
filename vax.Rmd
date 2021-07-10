@@ -70,29 +70,10 @@ df %>%
   geom_point(na.rm = TRUE)
 ```
 
-## NYT-like linear model
-
-First off, we can approximate what NYT is doing using linear regression based on
-the last couple of points (this doesn't line up exactly with their model but it seems
-close):
-
-```{r nyt_like, fig.width = 7.11, fig.height = 4}
-df %>%
-  ggplot(aes(date, vax)) +
-  geom_point(na.rm = TRUE) +
-  stat_smooth(formula = y ~ x, method = lm, se = FALSE, data = . %>% filter(row_number() > n() - 8), fullrange = TRUE) +
-  scale_x_date(limits = c(min(df$date), make_date(2021, 10, 31))) +
-  coord_cartesian(ylim = c(0, 1)) +
-  geom_vline(xintercept = make_date(2021, 10, 12), alpha = 0.2) +
-  geom_hline(yintercept = 0.9, alpha = 0.2) +
-  annotate("text", x = make_date(2021, 5, 28), y = 0.92, label = "90%", hjust = 0, vjust = 0, size = 3.5) +
-  annotate("text", x = make_date(2021, 10, 8), y = 0.5, hjust = 1, vjust = 0.5, label = "Oct 12", size = 3.5) 
-```
-
-However, instead of doing this I am going to fit a time series model to the data.
 
 ## Data prep for time series model of daily changes
 
+Let's fit a time series model to the data.
 Analyzing the data on the raw scale is hard because (1) we
 know that the percent of vaccinated people is bounded between 0 and 1 and (2)
 we know that the percent of vaccinated people is always increasing. Combining these
@@ -192,13 +173,13 @@ forecast_days = 180
 calc_fits = function(model = m, max_date = max(df_diff$date)) {
   df_log_diff %>%
     filter(date <= max_date) %>%
-    add_draws(colSums(aperm(model$state.contributions, c(2, 1, 3))))
+    mutate(.value = rvar(colSums(aperm(model$state.contributions, c(2, 1, 3)))))
 }
 fits_all = calc_fits()
 
 calc_pred_diff = function(model = m, max_date = max(df_diff$date)) {
   tibble(date = max_date + days(1:forecast_days)) %>%
-    add_draws(predict(model, horizon = forecast_days)$distribution, value = "log_diff_vax")
+    mutate(log_diff_vax = rvar(predict(model, horizon = forecast_days)$distribution))
 }
 pred_diff_all = calc_pred_diff()
 ```
@@ -222,10 +203,10 @@ widths = c(.5, .8, .95)
 
 plot_pred_diff = function(fits = fits_all, pred_diff = pred_diff_all) {
   pred_diff %>%
-    ggplot(aes(date, log_diff_vax)) +
-    stat_lineribbon(aes(y = .value, fill_ramp = stat(level)), data = fits, fill = "gray75", color = "gray65") +
-    stat_lineribbon(.width = widths, color = "#08519c") +
-    geom_line(data = df_log_diff, size = 1) +
+    ggplot(aes(date)) +
+    stat_dist_lineribbon(aes(dist = .value, fill_ramp = stat(level)), data = fits, fill = "gray75", color = "gray65") +
+    stat_dist_lineribbon(aes(dist = log_diff_vax), .width = widths, color = "#08519c") +
+    geom_line(aes(y = log_diff_vax), data = df_log_diff, size = 1) +
     geom_vline(xintercept = min(pred_diff$date) - days(1), color = "gray75") +
     # summer_line +
     scale_fill_brewer() +
@@ -247,18 +228,23 @@ vaccinated by inverting the log, cumulatively summing differences in log odds,
 then inverting the logit transformation:
 
 ```{r pred_vax}
+# need a logit and inverse logit functions in terms of elementary operations (plogis
+# does not work on rvars directly)
+logit = function(p) {log(p) - log1p(-p)}
+inv_logit = function(x) {1/(1 + exp(-x))}
+
 calc_pred_vax = function(pred_diff = pred_diff_all) {
   last_observed_vax = df_diff %>%
     filter(date == min(pred_diff$date) - days(1)) %$%
     vax
   
   pred_diff %>%
-    group_by(.draw) %>%
     mutate(
-      vax = plogis(cumsum(c(
-        qlogis(last_observed_vax) + exp(log_diff_vax[[1]]),
+      logit_vax = cumsum(c(
+        logit(last_observed_vax) + exp(log_diff_vax[[1]]),
         exp(log_diff_vax[-1])
-      )))
+      )),
+      vax = inv_logit(logit_vax)
     )
 }
 pred_vax_all = calc_pred_vax()
@@ -271,10 +257,10 @@ some threshold (say, 70%):
 ```{r model_breakdown, fig.width = 5, fig.height = 7}
 plot_vaxed = function(pred_vax = pred_vax_all) {
   pred_vax %>%
-    ggplot(aes(date, vax)) +
-    stat_lineribbon(.width = widths, color = "#08519c") +
+    ggplot(aes(date)) +
+    stat_dist_lineribbon(aes(dist = vax), .width = widths, color = "#08519c") +
     scale_fill_brewer() +
-    geom_line(data = df_diff, size = 1) +
+    geom_line(aes(y = vax), data = df_diff, size = 1) +
     geom_hline(yintercept = .7, alpha = 0.25) +
     geom_vline(xintercept = min(pred_vax$date) - days(1), color = "gray75") +
     # summer_line +
@@ -294,9 +280,9 @@ vaxed = plot_vaxed()
 
 diffs = plot_pred_diff()
 
+pred_vax_all$prob_vax_gt_70 = Pr(pred_vax_all$vax > .70)
+
 prob = pred_vax_all %>%
-  group_by(date) %>%
-  summarise(prob_vax_gt_70 = mean(vax > .70)) %>%
   ggplot(aes(date, prob_vax_gt_70)) +
   geom_line(color = "#08519c", size = 1) +
   theme_ggdist() +
@@ -317,7 +303,7 @@ This gives us a final chart like this:
 
 ```{r vaxed_plot, warning = FALSE, fig.width = 7.11, fig.height = 4}
 vaxed +
-  stat_smooth(formula = y ~ x, method = lm, se = FALSE,
+  stat_smooth(aes(y = vax), formula = y ~ x, method = lm, se = FALSE,
     data = df %>% filter(row_number() > n() - 8), 
     fullrange = TRUE, color = scales::alpha("white", 0.5), size = 1
   ) +
@@ -370,7 +356,7 @@ plots[[length(plots) + 1]] = list(
 )
 ```
 
-And put them together into an animation:
+Save each chart to disk:
 
 ```{r eval = FALSE}
 png_path <- file.path("model_plots", "plot%03d.png")
@@ -380,6 +366,8 @@ for (p in plots) {
 }
 dev.off()
 ```
+
+And put them together into an animation:
 
 ```{r eval = FALSE}
 png_files <- sprintf(png_path, seq_along(plots))
